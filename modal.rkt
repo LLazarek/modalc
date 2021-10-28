@@ -122,6 +122,10 @@
     (modal-> (mode:once-every 2)
              number? string?)
     x)
+  (define/contract (h-exponential-backoff x)
+    (modal-> (mode:exponential-backoff 2)
+             number? number?)
+    x)
 
   (test-begin
     #:name checks
@@ -153,6 +157,33 @@
     (test-exn exn:fail:contract:blame?
               (g-modal-> "hi"))
     (test-equal? (g-modal-> "hi") "hi"))
+
+  (test-begin
+    #:name exponential-backoff
+    (test-exn exn:fail:contract:blame?
+              (h-exponential-backoff "hi"))
+    (test-equal? (h-exponential-backoff "hi") "hi")
+    (test-equal? (h-exponential-backoff "hi") "hi")
+    (test-equal? (h-exponential-backoff "hi") "hi")
+    (test-exn exn:fail:contract:blame?
+              (h-exponential-backoff "hi"))
+    (test-equal? (h-exponential-backoff "hi") "hi")
+    (test-equal? (h-exponential-backoff "hi") "hi")
+    (test-equal? (h-exponential-backoff "hi") "hi")
+    (test-equal? (h-exponential-backoff "hi") "hi")
+    (test-equal? (h-exponential-backoff "hi") "hi")
+    (test-equal? (h-exponential-backoff "hi") "hi")
+    (test-equal? (h-exponential-backoff "hi") "hi")
+    (test-equal? (h-exponential-backoff "hi") "hi")
+    (test-equal? (h-exponential-backoff "hi") "hi")
+    (test-equal? (h-exponential-backoff "hi") "hi")
+    (test-equal? (h-exponential-backoff "hi") "hi")
+    (test-equal? (h-exponential-backoff "hi") "hi")
+    (test-equal? (h-exponential-backoff "hi") "hi")
+    (test-equal? (h-exponential-backoff "hi") "hi")
+    (test-equal? (h-exponential-backoff "hi") "hi")
+    (test-exn exn:fail:contract:blame?
+              (h-exponential-backoff "hi")))
 
   (define (blame-responsible blame)
     (blame-positive blame))
