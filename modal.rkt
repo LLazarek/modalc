@@ -1,6 +1,7 @@
 #lang at-exp racket
 
 (provide modal/c
+         mode:first
          mode:once-every
          mode:once-per-category
          mode:exponential-backoff
@@ -26,6 +27,17 @@
        (if (should-apply-ctc? val)
            (inner-ctc-proj/blame val neg-party)
            val)))))
+
+;; mode:first : natural? -> mode/c
+(define (mode:first n)
+  (define remaining-checks (box n))
+  (λ _
+    (define remaining (unbox remaining-checks))
+    (cond [(zero? remaining)
+           #f]
+          [else
+           (set-box! remaining-checks (sub1 remaining))
+           #t])))
 
 ;; mode:once-every : natural? -> mode/c
 (define (mode:once-every n)
@@ -145,6 +157,10 @@
     (modal-> (mode:parameter check-ctcs?)
              number? any)
     x)
+  (define/contract (p-check-arg-once x)
+    (-> (modal/c number? (mode:first 1))
+        any)
+    x)
 
   (define-test-syntax (test-no-exn e)
     #'(with-handlers ([exn? (λ (exn) (fail @~a{raised exception: @~e[exn]}))])
@@ -185,7 +201,12 @@
     (test-exn exn:fail:contract:blame?
               (m-modal->any "not a number"))
     (parameterize ([check-ctcs? #f])
-      (test-no-exn (m-modal->any "not a number"))))
+      (test-no-exn (m-modal->any "not a number")))
+
+    (test-exn exn:fail:contract:blame?
+              (p-check-arg-once "not a number"))
+    (test-no-exn (p-check-arg-once "not a number"))
+    (test-no-exn (p-check-arg-once "not a number")))
 
   (test-begin
     #:name exponential-backoff
