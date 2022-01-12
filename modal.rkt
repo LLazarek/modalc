@@ -1,6 +1,8 @@
 #lang at-exp racket
 
 (provide modal/c
+         mode:always
+         mode:never
          mode:first
          mode:once-every
          mode:once-per-category
@@ -27,6 +29,10 @@
        (if (should-apply-ctc? val)
            (inner-ctc-proj/blame val neg-party)
            val)))))
+
+;; mode:always , mode:never : mode/c
+(define mode:always (const #t))
+(define mode:never (const #f))
 
 ;; mode:first : natural? -> mode/c
 (define (mode:first n)
