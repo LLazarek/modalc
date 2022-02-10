@@ -8,10 +8,14 @@
          mode:once-per-category
          mode:exponential-backoff
          mode:parameter
-         modal->)
+         modal->
+         modal->i)
+
+;; todo: new mode idea: decreasing ctc strength over time
 
 (require racket/contract
-         syntax/parse/define)
+         syntax/parse/define
+         "modal-arrow-i.rkt")
 
 ;; mode/c : (any/c -> boolean?)
 ;;   where the argument is the value to potentially be contracted
@@ -137,7 +141,8 @@
                  (apply values args)])))))))
 
 (module+ test
-  (require ruinit)
+  (require ruinit
+           "test-common.rkt")
 
   (define/contract (f-normal x)
     (-> number? number?)
@@ -168,10 +173,6 @@
         any)
     x)
 
-  (define-test-syntax (test-no-exn e)
-    #'(with-handlers ([exn? (λ (exn) (fail @~a{raised exception: @~e[exn]}))])
-        e
-        #t))
   (test-begin
     #:name checks
 
@@ -240,21 +241,6 @@
     (test-equal? (h-exponential-backoff "hi") "hi")
     (test-exn exn:fail:contract:blame?
               (h-exponential-backoff "hi")))
-
-  (define (blame-responsible blame)
-    (blame-positive blame))
-  (define ((make-test-blamed-equal? check-party) an-exn)
-    (unless (exn:fail:contract:blame? an-exn)
-      (test-fail "exn ~s is not a blame error" an-exn))
-    (define blamed (blame-responsible (exn:fail:contract:blame-object an-exn)))
-    (extend-test-message (check-party blamed)
-                         @~a{blamed party: @~s[blamed]}))
-  (define-test-syntax (test-blamed e blamed-party-pattern)
-    #'(with-handlers ([exn:fail? (make-test-blamed-equal?
-                                  (match-lambda [blamed-party-pattern #t]
-                                                [_ #f]))])
-        e
-        (fail "No blame")))
 
   (test-begin
     #:name blame
