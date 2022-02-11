@@ -256,7 +256,8 @@
 
 (module+ test
   (require ruinit
-           "test-common.rkt")
+           "test-common.rkt"
+           "modes.rkt")
   (test-begin
     #:name toposort
     (test-equal? (toposort (hash 'A '()
@@ -277,9 +278,9 @@
                  '(D A B C))
     (test-equal? (toposort (hash 'A '(something-else)))
                  '(A)))
-  (define mode:always (const #t))
+
   (test-begin
-    #:name modal->i
+    #:name modal->i-emulates-->i
     (ignore (define/contract (f-n-any x)
               (modal->i mode:always ([x number?]) any)
               x)
@@ -301,4 +302,31 @@
     (test-blamed (f-n->-= 5 6)
                  '(function f-n->-=))
     (test-blamed (f-n->-= 5 3)
-                 (list (? path-string?) 'test))))
+                 (list (? path-string?) 'test)))
+
+  (test-begin
+    #:name modal->i-modes
+    (ignore (define/contract (f-modal-> x)
+              (modal->i (mode:once-every 2)
+                        ([x number?])
+                        [result {x} (and/c number?
+                                           (=/c x))])
+              x)
+            (define/contract (g-modal-> x)
+              (modal->i (mode:once-every 2)
+                        ([x number?])
+                        [result {x} (and/c number?
+                                           (=/c x))])
+              (add1 x)))
+    (test-equal? (f-modal-> 2) 2)
+    (test-equal? (f-modal-> 2) 2)
+    (test-exn exn:fail:contract:blame?
+              (f-modal-> "hi"))
+    (test-equal? (f-modal-> "hi") "hi")
+    (test-exn exn:fail:contract:blame?
+              (f-modal-> "hi"))
+    (test-equal? (f-modal-> "hi") "hi")
+
+    (test-exn exn:fail:contract:blame?
+              (g-modal-> 2))
+    (test-equal? (g-modal-> 2) 3)))
