@@ -44,6 +44,10 @@
   (make-modal-> mode (list dom-ctc ...) (list rng.ctc ...)))
 
 (define (make-modal-> should-apply-ctc? dom-ctcs rng-ctcs)
+  (define chaperone-or-impersonate-procedure
+    (if (andmap chaperone-contract? (append dom-ctcs rng-ctcs))
+        chaperone-procedure
+        impersonate-procedure))
   (define dom-projs (map contract-late-neg-projection dom-ctcs))
   (define rng-projs (map contract-late-neg-projection rng-ctcs))
   (make-contract
@@ -55,7 +59,7 @@
      (define dom-projs/blame (map (λ (p) (p (blame-swap blame))) dom-projs))
      (define rng-projs/blame (map (λ (p) (p blame)) rng-projs))
      (λ (f neg-party)
-       (chaperone-procedure
+       (chaperone-or-impersonate-procedure
         f
         (λ args
           (cond [(should-apply-ctc? args)

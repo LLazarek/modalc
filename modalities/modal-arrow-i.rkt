@@ -315,7 +315,8 @@
    #:late-neg-projection
    (λ (blame)
      (λ (f neg-party)
-       (chaperone-procedure
+       ;; ->i only makes a chaperone if explicitly asked, otherwise it always impersonates!
+       (impersonate-procedure
         f
         (λ args
           (cond [(should-apply-ctc? args)
