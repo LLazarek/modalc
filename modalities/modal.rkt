@@ -15,8 +15,8 @@
 ;; mode/c : (any/c -> boolean?)
 ;;   where the argument is the value to potentially be contracted
 
-;; modal/c : contract? mode/c
-(define (modal/c inner-ctc should-apply-ctc?)
+;; modal/c : mode/c contract?
+(define (modal/c should-apply-ctc? inner-ctc)
   (define inner-ctc-proj
     (contract-late-neg-projection inner-ctc))
   (make-contract
@@ -84,8 +84,8 @@
     (-> number? number?)
     x)
   (define/contract (f-modal-parts x)
-    (-> (modal/c number? (mode:once-every 2))
-        (modal/c number? (mode:once-every 2)))
+    (-> (modal/c (mode:once-every 2) number?)
+        (modal/c (mode:once-every 2) number?))
     x)
   (define/contract (f-modal-> x)
     (modal-> (mode:once-every 2)
@@ -105,7 +105,7 @@
              number? any)
     x)
   (define/contract (p-check-arg-once x)
-    (-> (modal/c number? (mode:first 1))
+    (-> (modal/c (mode:first 1) number?)
         any)
     x)
 

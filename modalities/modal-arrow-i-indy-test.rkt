@@ -58,6 +58,19 @@
             [result {g} (g "not a number")])
   x)
 
+(define/contract (def/c/baseline-blame-ctc-post g x)
+  (->i ([g (-> number? number?)]
+        [x {g} (=/c (g 5))])
+       [result any/c]
+       #:post {g} (g "not a number"))
+  x)
+(define/contract (def/c/f-indy-blame-ctc-post g x)
+  (modal->i mode:always ([g (-> number? number?)]
+                         [x {g} (=/c (g 5))])
+            [result any/c]
+            #:post {g} (g "not a number"))
+  x)
+
 (test-begin
   #:name modal->i-indy-blame
   (test-blamed (baseline-blame-ctc (λ (x) x) 5)
@@ -84,5 +97,10 @@
   (test-blamed (def/c/baseline-blame-ctc-ret (λ (x) x) 5)
                (? path-string?))
   (test-blamed (def/c/f-indy-blame-ctc-ret (λ (x) x) 5)
+               (? path-string?))
+
+  (test-blamed (def/c/baseline-blame-ctc-post (λ (x) x) 5)
+               (? path-string?))
+  (test-blamed (def/c/f-indy-blame-ctc-post (λ (x) x) 5)
                (? path-string?)))
 

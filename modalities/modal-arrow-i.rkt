@@ -8,7 +8,8 @@
 
 (begin-for-syntax
   (require racket
-           syntax/parse)
+           syntax/parse
+           racket/syntax)
   (struct static-un/dep (name stx deps))
   (define (static-undep name stx)
     (static-un/dep name stx empty))
@@ -23,6 +24,13 @@
              #:attr dep/undep-ctc (static-dep #'name
                                               (attribute dep-name)
                                               #'ctc)])
+
+  (define-splicing-syntax-class pre/post-spec
+    #:commit
+    #:attributes [(deps 1) expr]
+    [pattern {~seq (deps ...) expr}]
+    [pattern expr
+             #:with [deps ...] #'()])
 
   ;; (listof static-un/dep?) -> (hash/c index? (listof index?))
   (define (static-deps->graph-hash deps)
@@ -49,7 +57,12 @@
                  [dep-name (in-list (static-un/dep-deps static-ud))]
                  [i (in-value (index-of names dep-name free-identifier=?))]
                  #:when i)
-       i))))
+       i)))
+
+  (define (id-intersection id-list-1 id-list-2)
+    (for/list ([id (in-list id-list-1)]
+               #:when (member id id-list-2 free-identifier=?))
+      id)))
 
 (define (toposort unnorm-graph-dict)
   (define graph-dict
@@ -159,45 +172,72 @@
 ;; Those values are meant to be the internally-contracted arguments.
 (define (make-result-contracter make-contract-makers
                                 dependencies
-                                #:contract-location ctc-location)
+                                #:contract-location ctc-location
+                                #:extra-internal-ctcs [extra-internal-ctcs empty])
   (λ (contract-maker-maker-arguments)
     (define contract-makers (apply make-contract-makers contract-maker-maker-arguments))
     (make-arg-contracter contract-makers
                          dependencies
                          #f
-                         #:contract-location ctc-location)))
+                         #:contract-location ctc-location
+                         #:extra-internal-ctcs extra-internal-ctcs)))
+
+(define (make-pre/post-checker arg-to-post-parameter-index-map
+                               result-to-post-parameter-index-map
+                               post-fn-parameter-count
+                               post-fn)
+  (λ (internally-contracted-args
+      internally-contracted-results
+      blame
+      neg-party)
+    (define post-parameters (make-vector post-fn-parameter-count))
+    (for ([{post-parameter-index arg-index} (in-hash arg-to-post-parameter-index-map)])
+      (vector-set! post-parameters
+                   post-parameter-index
+                   (list-ref internally-contracted-args arg-index)))
+    (for ([{post-parameter-index result-index} (in-hash result-to-post-parameter-index-map)])
+      (vector-set! post-parameters
+                   post-parameter-index
+                   (list-ref internally-contracted-results result-index)))
+    (unless (apply post-fn (vector->list post-parameters))
+      (raise-blame-error (blame-swap blame)
+                         #:missing-party neg-party
+                         '?
+                         "Post condition violation"))))
 
 (define-simple-macro (modal->i mode
                                (mandatory-arg:dep-spec ...)
                                ;; {~optional (optional-arg:dep-spec ...)}
                                {~or single-result:dep-spec
                                     ({~datum values} results:dep-spec ...)
-                                    {~and any-kw {~datum any}}})
+                                    {~and any-kw {~datum any}}}
+                               {~optional {~seq #:post post:pre/post-spec}})
   #:with unquoted-name this-syntax
-  #:do [(define (->syntax v) (datum->syntax this-syntax v) #;v)]
-  #:do [(define arg-names (map static-un/dep-name (attribute mandatory-arg.dep/undep-ctc)))]
-  #:do [(define is-any? (and (attribute any-kw) #t))]
+  #:do [(define (->syntax v) (datum->syntax this-syntax v) #;v)
+        (define (->syntax-list l) (->syntax (cons #'list l)))
+        (define arg-names (map static-un/dep-name (attribute mandatory-arg.dep/undep-ctc)))
+        (define is-any? (and (attribute any-kw) #t))]
   #:with is-any-stx (->syntax is-any?)
   #:with here (syntax/loc this-syntax (quote-module-name))
-  #:with arg-contract-makers-stx (->syntax
-                                  (cons
-                                   #'list
-                                   (for/list ([arg (in-list (attribute mandatory-arg.dep/undep-ctc))])
-                                     #`(λ #,(static-un/dep-deps arg)
-                                         #,(static-un/dep-stx arg)))))
+  #:with arg-contract-makers-stx (->syntax-list
+                                  (for/list ([arg (in-list (attribute mandatory-arg.dep/undep-ctc))])
+                                    #`(λ #,(static-un/dep-deps arg)
+                                        #,(static-un/dep-stx arg))))
   #:with arg-dependencies-hash-stx (->syntax (static-deps->graph-hash
                                               (attribute mandatory-arg.dep/undep-ctc)))
   #:do [(define result-dep/undep-ctcs (if (attribute single-result.dep/undep-ctc)
                                           (list (attribute
                                                  single-result.dep/undep-ctc))
-                                          (attribute results.dep/undep-ctc)))]
-  #:with args-needed-by-result-dependencies-stx (->syntax
-                                                 (cons
-                                                  #'list
-                                                  (if is-any?
-                                                      '()
-                                                      (static-deps->external-refs result-dep/undep-ctcs
-                                                                                  arg-names))))
+                                          (attribute results.dep/undep-ctc)))
+        (define result-names (if is-any?
+                                 '()
+                                 (map static-un/dep-name result-dep/undep-ctcs)))]
+  #:do [(define args-needed-by-result-dependencies
+          (if is-any?
+              '()
+              (static-deps->external-refs result-dep/undep-ctcs
+                                          arg-names)))]
+  #:with args-needed-by-result-dependencies-stx (->syntax-list args-needed-by-result-dependencies)
   #:with result-contract-makers-stx
   (->syntax
    (or is-any?
@@ -213,22 +253,57 @@
   #:with result-dependencies-hash-stx (->syntax (or is-any?
                                                     (static-deps->graph-hash
                                                      result-dep/undep-ctcs)))
+  #:do [;; ... -> (hash/c index? index?)
+        ;; keys are the indices of a name in `deps`,
+        ;; and they map to the index of the matching name in `external-names`
+        (define (pre/post-deps->external-refs-mapping deps external-names)
+          (define external-refs
+            (static-deps->external-refs (list (static-un/dep (generate-temporary) #f deps))
+                                        external-names))
+          (for/hash ([index (in-list external-refs)])
+            (define referred-to-name (list-ref external-names index))
+            (values (index-of deps referred-to-name free-identifier=?)
+                    index)))
+        (define args-needed-by-post
+          (if (attribute post)
+              (pre/post-deps->external-refs-mapping (attribute post.deps) arg-names)
+              (hash)))
+        (define results-needed-by-post
+          (if (attribute post)
+              (pre/post-deps->external-refs-mapping (attribute post.deps) result-names)
+              (hash)))
+
+        (define all-extra-needed-arg-internal-ctcs (append args-needed-by-result-dependencies
+                                                           (hash-values args-needed-by-post)))
+        (define all-extra-needed-result-internal-ctcs (hash-values results-needed-by-post))]
+  #:with args-needed-by-post-stx (->syntax args-needed-by-post)
+  #:with results-needed-by-post-stx (->syntax results-needed-by-post)
+  #:with post-deps-count-stx (->syntax (if (attribute post) (length (attribute post.deps)) 0))
+
+  #:with all-extra-needed-arg-internal-ctcs-stx (->syntax-list all-extra-needed-arg-internal-ctcs)
+  #:with all-extra-needed-result-internal-ctcs-stx (->syntax-list all-extra-needed-result-internal-ctcs)
   (make-modal->i mode
                  'unquoted-name
                  (make-arg-contracter arg-contract-makers-stx
                                       arg-dependencies-hash-stx
                                       #:contract-location here
-                                      #:extra-internal-ctcs args-needed-by-result-dependencies-stx)
+                                      #:extra-internal-ctcs all-extra-needed-arg-internal-ctcs-stx)
                  is-any-stx
                  (make-result-contracter result-contract-makers-stx
                                          result-dependencies-hash-stx
-                                         #:contract-location here)))
+                                         #:contract-location here
+                                         #:extra-internal-ctcs all-extra-needed-result-internal-ctcs-stx)
+                 (make-pre/post-checker args-needed-by-post-stx
+                                        results-needed-by-post-stx
+                                        post-deps-count-stx
+                                        {~? (λ (post.deps ...) post.expr) (λ () #t)})))
 
 (define (make-modal->i should-apply-ctc?
                        name
                        contract-the-args
                        no-results?
-                       contract-the-results)
+                       contract-the-results
+                       do-post!)
   (make-contract
    #:name name
    #:late-neg-projection
@@ -245,10 +320,14 @@
                             externally-contracted-args)
                      (apply values
                             (λ results
-                              (define-values {contracted-results _ignored}
+                              (define-values {contracted-results internally-contracted-results}
                                 (((contract-the-results internally-contracted-args)
                                   blame neg-party)
                                  results))
+                              (do-post! internally-contracted-args
+                                        internally-contracted-results
+                                        blame
+                                        neg-party)
                               (apply values contracted-results))
                             externally-contracted-args))]
                 [else
@@ -329,4 +408,17 @@
 
     (test-exn exn:fail:contract:blame?
               (g-modal-> 2))
-    (test-equal? (g-modal-> 2) 3)))
+    (test-equal? (g-modal-> 2) 3))
+
+  (test-begin
+    #:name modal->i-post
+    (ignore (define/contract (f-modal-> x)
+              (modal->i (mode:once-every 2)
+                        ([x number?])
+                        [result {x} (and/c number?
+                                           (=/c x))]
+                        #:post {x result} (> result x))
+              x))
+    (test-exn exn:fail:contract:blame?
+              (f-modal-> 2))
+    (test-equal? (f-modal-> 2) 2)))
