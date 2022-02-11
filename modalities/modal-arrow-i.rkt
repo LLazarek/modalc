@@ -182,8 +182,14 @@
                          #:contract-location ctc-location
                          #:extra-internal-ctcs extra-internal-ctcs)))
 
-(define (make-pre/post-checker arg-to-post-parameter-index-map
-                               result-to-post-parameter-index-map
+;; (hash/c index? index?) ; map from index of an arg to `post-fn` to index of a value in `internally-contracted-args`
+;; (hash/c index? index?) ; map from index of an arg to `post-fn` to index of a value in `internally-contracted-results`
+;; index?
+;; (unconstrained-domain-> any/c)
+;; ->
+;; ((listof any/c) (listof any/c) blame? neg-party? -> any)
+(define (make-pre/post-checker post-parameter-to-arg-index-map
+                               post-parameter-to-result-index-map
                                post-fn-parameter-count
                                post-fn)
   (λ (internally-contracted-args
@@ -191,11 +197,11 @@
       blame
       neg-party)
     (define post-parameters (make-vector post-fn-parameter-count))
-    (for ([{post-parameter-index arg-index} (in-hash arg-to-post-parameter-index-map)])
+    (for ([{post-parameter-index arg-index} (in-hash post-parameter-to-arg-index-map)])
       (vector-set! post-parameters
                    post-parameter-index
                    (list-ref internally-contracted-args arg-index)))
-    (for ([{post-parameter-index result-index} (in-hash result-to-post-parameter-index-map)])
+    (for ([{post-parameter-index result-index} (in-hash post-parameter-to-result-index-map)])
       (vector-set! post-parameters
                    post-parameter-index
                    (list-ref internally-contracted-results result-index)))
