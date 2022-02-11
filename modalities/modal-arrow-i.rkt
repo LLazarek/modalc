@@ -3,7 +3,8 @@
 (provide modal->i)
 
 (require racket/contract
-         syntax/parse/define)
+         syntax/parse/define
+         syntax/location)
 
 (begin-for-syntax
   (require racket
@@ -33,7 +34,22 @@
       (hash-ref name-indices (syntax->datum id) #f))
     (for/hash ([dep (in-list deps)]
                [i (in-naturals)])
-      (values i (filter-map index-of-dep (static-un/dep-deps dep))))))
+      (values i (filter-map index-of-dep (static-un/dep-deps dep)))))
+  ;; (listof static-un/dep?) -> (listof index?)
+  ;; Return the indexes of `names` to which `deps` contains references.
+  ;;
+  ;; E.g.
+  #;(static-deps->external-refs
+     (list (static-un/dep #'x _ (#'y #'z))
+           (static-un/dep #'y _ (#'a #'k)))
+     (#'a #'b #'z)) ; => '(0 2)
+  (define (static-deps->external-refs deps names)
+    (remove-duplicates
+     (for*/list ([static-ud (in-list deps)]
+                 [dep-name (in-list (static-un/dep-deps static-ud))]
+                 [i (in-value (index-of names dep-name free-identifier=?))]
+                 #:when i)
+       i))))
 
 (define (toposort unnorm-graph-dict)
   (define graph-dict
@@ -62,9 +78,10 @@
 ;; (listof any/c)
 ;; (listof (any/c ... -> contract?))
 ;; (hash/c index? (listof index?))
-;; (any/c contract? -> any/c)
+;; (listof index?)
+;; (any/c contract? boolean? -> any/c)
 ;; ->
-;; (listof any/c)
+;; (values (listof any/c) (listof (or/c #f any/c)))
 ;;
 ;; Apply dependent contracts produced by `contract-makers` to `plain-values` using `apply-contract`.
 ;; `dependencies` is the dependency graph between the contracts/values, in terms of their indices.
@@ -73,53 +90,83 @@
 (define (dep-apply plain-values
                    contract-makers
                    dependencies
+                   extra-internal-ctcs
                    apply-contract)
+  (define sorted-indices (toposort dependencies))
+
   (define (make-indexer l) (let ([v (list->vector l)])
                              (λ (i) (vector-ref v i))))
-
   (define plain-value (make-indexer plain-values))
   (define contract-maker (make-indexer contract-makers))
+  (define needs-internal-ctc?
+    (make-indexer (for/list ([i (in-range (length plain-values))])
+                    (for/or ([{other-i other-i-deps} (in-hash (hash-set dependencies
+                                                                        -1
+                                                                        extra-internal-ctcs))]
+                             #:when (not (= i other-i))
+                             [other-i-dep (in-list other-i-deps)])
+                      (= other-i-dep i)))))
 
-  (define sorted-indices (toposort dependencies))
-  (for/fold ([contracted-values (make-vector (length plain-values))]
-             #:result (vector->list contracted-values))
+  (define internal-contracted-values (make-vector (length plain-values)))
+  (for/fold ([external-contracted-values empty]
+             #:result (values (reverse external-contracted-values)
+                              (vector->list internal-contracted-values)))
             ([index (in-list sorted-indices)])
     (define plain-v (plain-value index))
     (define ctc-maker (contract-maker index))
     (define ctced-deps (for/list ([dep-i (in-list (hash-ref dependencies index))])
-                         (vector-ref contracted-values dep-i)))
+                         (vector-ref internal-contracted-values dep-i)))
     (define ctc (apply ctc-maker ctced-deps))
-    (define v+ctc (apply-contract plain-v ctc))
-    (vector-set! contracted-values index v+ctc)
-    contracted-values))
+
+    (when (needs-internal-ctc? index)
+      (define v+internal-ctc (apply-contract plain-v ctc #t))
+      (vector-set! internal-contracted-values index v+internal-ctc))
+
+    (define v+external-ctc (apply-contract plain-v ctc #f))
+    (cons v+external-ctc external-contracted-values)))
 
 ;; (listof ((listof any/c) -> contract?))
 ;; (hash/c index? (listof index?))
+;; [boolean?]
+;; #:contract-location any/c
 ;; ->
 ;; (blame? neg-party? -> ((listof any/c) -> (listof any/c)))
 (define (make-arg-contracter contract-makers
                              dependencies
-                             [swap-blame? #t])
+                             [swap-blame? #t]
+                             #:contract-location ctc-location
+                             #:extra-internal-ctcs [extra-internal-ctcs empty])
   (λ (blame neg-party)
     (λ (plain-args)
       (dep-apply plain-args
                  contract-makers
                  dependencies
-                 (λ (v ctc)
+                 extra-internal-ctcs
+                 (λ (v ctc internal-to-ctc?)
                    (define proj (contract-late-neg-projection ctc))
-                   (define proj/blame (proj (if swap-blame? (blame-swap blame) blame)))
+                   (define maybe-replace-negative
+                     (if internal-to-ctc?
+                         (λ (b) (blame-replace-negative b ctc-location))
+                         values))
+                   (define proj/blame
+                     (proj (maybe-replace-negative (if swap-blame?
+                                                       (blame-swap blame)
+                                                       blame))))
                    (proj/blame v neg-party))))))
 
-;; same contract as -arg-
+;; almost same contract as -arg-, less `swap-blame?`, but `make-contract-makers` is curried
+;; one level, accepting `any/c ...` to produce the contract makers.
+;; Those values are meant to be the internally-contracted arguments.
 (define (make-result-contracter make-contract-makers
-                                dependencies)
+                                dependencies
+                                #:contract-location ctc-location)
   (λ (contract-maker-maker-arguments)
     (define contract-makers (apply make-contract-makers contract-maker-maker-arguments))
     (make-arg-contracter contract-makers
                          dependencies
-                         #f)))
+                         #f
+                         #:contract-location ctc-location)))
 
-;; lltodo the blame is wrong here, this is picky
 (define-simple-macro (modal->i mode
                                (mandatory-arg:dep-spec ...)
                                ;; {~optional (optional-arg:dep-spec ...)}
@@ -131,6 +178,7 @@
   #:do [(define arg-names (map static-un/dep-name (attribute mandatory-arg.dep/undep-ctc)))]
   #:do [(define is-any? (and (attribute any-kw) #t))]
   #:with is-any-stx (->syntax is-any?)
+  #:with here (syntax/loc this-syntax (quote-module-name))
   #:with arg-contract-makers-stx (->syntax
                                   (cons
                                    #'list
@@ -143,6 +191,13 @@
                                           (list (attribute
                                                  single-result.dep/undep-ctc))
                                           (attribute results.dep/undep-ctc)))]
+  #:with args-needed-by-result-dependencies-stx (->syntax
+                                                 (cons
+                                                  #'list
+                                                  (if is-any?
+                                                      '()
+                                                      (static-deps->external-refs result-dep/undep-ctcs
+                                                                                  arg-names))))
   #:with result-contract-makers-stx
   (->syntax
    (or is-any?
@@ -161,10 +216,13 @@
   (make-modal->i mode
                  'unquoted-name
                  (make-arg-contracter arg-contract-makers-stx
-                                      arg-dependencies-hash-stx)
+                                      arg-dependencies-hash-stx
+                                      #:contract-location here
+                                      #:extra-internal-ctcs args-needed-by-result-dependencies-stx)
                  is-any-stx
                  (make-result-contracter result-contract-makers-stx
-                                         result-dependencies-hash-stx)))
+                                         result-dependencies-hash-stx
+                                         #:contract-location here)))
 
 (define (make-modal->i should-apply-ctc?
                        name
@@ -180,18 +238,19 @@
         f
         (λ args
           (cond [(should-apply-ctc? args)
-                 (define contracted-args
+                 (define-values {externally-contracted-args internally-contracted-args}
                    ((contract-the-args blame neg-party) args))
                  (if no-results? ;; i.e. `any` range
                      (apply values
-                            contracted-args)
+                            externally-contracted-args)
                      (apply values
                             (λ results
-                              (apply values
-                                     (((contract-the-results contracted-args)
-                                       blame neg-party)
-                                      results)))
-                            contracted-args))]
+                              (define-values {contracted-results _ignored}
+                                (((contract-the-results internally-contracted-args)
+                                  blame neg-party)
+                                 results))
+                              (apply values contracted-results))
+                            externally-contracted-args))]
                 [else
                  (apply values args)])))))))
 
@@ -232,11 +291,6 @@
               x)
             (define/contract (f-n->-= x y)
               (modal->i mode:always ([x number?] [y {x} (>/c x)]) [result {y} (=/c y)])
-              x)
-            (define/contract (f-indy g x)
-              (modal->i mode:always ([g (-> number? number?)]
-                                     [x {g} (=/c (g "not a number"))])
-                        [result any/c])
               x))
     (test-equal? (f-n-any 5) 5)
     (test-blamed (f-n-any 'hi)
@@ -247,6 +301,4 @@
     (test-blamed (f-n->-= 5 6)
                  '(function f-n->-=))
     (test-blamed (f-n->-= 5 3)
-                 (list (? path-string?) 'test))
-    (test-blamed (f-indy (λ (x) x) 5)
-                 '?)))
+                 (list (? path-string?) 'test))))
