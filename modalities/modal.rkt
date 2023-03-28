@@ -20,7 +20,7 @@
   (define inner-ctc-proj
     (contract-late-neg-projection inner-ctc))
   (make-contract
-   #:name 'modal/c
+   #:name `(modal/c ,(contract-name inner-ctc))
    #:late-neg-projection
    (λ (blame)
      (define inner-ctc-proj/blame (inner-ctc-proj blame))
