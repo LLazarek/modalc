@@ -3,6 +3,7 @@
 (provide modal/c
          modal->
          modal->i
+         modal->*
          (all-from-out "modes.rkt"))
 
 ;; todo: new mode idea: decreasing ctc strength over time
