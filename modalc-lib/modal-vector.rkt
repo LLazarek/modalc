@@ -3,10 +3,12 @@
 (require modalc
          syntax/parse/define)
 
+(provide modal-vector/c
+         modal-vector/c*)
+
 ;; apply mode to both ref and set
 (define (modal-vector/c should-apply-ctc? . inner-ctc)
-  ;; passes inner-ctc in as a list
-  (modal-vector/c* inner-ctc #:ref/set should-apply-ctc?))
+  (apply modal-vector/c* inner-ctc #:ref/set should-apply-ctc?))
 
 
 (define (modal-vector/c* #:ref [ref-ctc? #f]
@@ -14,10 +16,6 @@
                          #:ref/set [all-ctc? #f]
                          . inner-ctc)
   
-  ;; when using modal-vector/c
-  (when (list? (first inner-ctc))
-    (set! inner-ctc (first inner-ctc)))
-
   ;; error when no mode exists
   (unless (or ref-ctc?
               set-ctc?
@@ -45,10 +43,54 @@
                                     ((vector-ref inner-ctc-proj/blame index) value neg-party)]
                                    [else value]))
                            (λ (vec index value)
-                             (cond [(should-apply-ctc?/set vec)
+                             (cond [(should-apply-ctc?/set (list index value))
                                     ((vector-ref inner-ctc-proj/blame index) value neg-party)]
                                    [else value])))))))
 
+(define (modal-vectorof should-apply-ctc? . inner-ctc)
+  (apply modal-vectorof* inner-ctc #:ref/set should-apply-ctc?))
+
+(define (modal-vectorof* #:ref [ref-ctc? #f]
+                        #:set [set-ctc? #f]
+                        #:ref/set [all-ctc? #f]
+                        . inner-ctc)
+  
+  ;; error when no mode exists
+  (unless (or ref-ctc?
+              set-ctc?
+              all-ctc?)
+    (raise-user-error 'modal-vector/c* "No mode supplied"))
+
+  ;; create ref and set modes
+  (define should-apply-ctc?/ref (or ref-ctc?
+                                    all-ctc?
+                                    mode:never))
+  (define should-apply-ctc?/set (or set-ctc?
+                                    all-ctc?
+                                    mode:never))
+  (define inner-ctc-proj
+    (apply contract-late-neg-projection inner-ctc))
+
+  (make-contract
+   #:name `(modal-vector/c ,(contract-name inner-ctc-proj))
+   #:late-neg-projection
+   (λ (blame)
+     (define inner-ctc-proj/blame (inner-ctc-proj blame))
+     (λ (val neg-party)
+       (impersonate-vector val
+                           (λ (vec index value)
+                             (cond [(should-apply-ctc?/ref (list index value))
+                                    (for/vector ([v vec])
+                                      (inner-ctc-proj/blame v neg-party))
+                                    value]
+                                   [else value]))
+                           (λ (vec index value)
+                             (cond [(should-apply-ctc?/set (list index value))
+                                    (for/vector ([v vec])
+                                      (inner-ctc-proj/blame v neg-party))]
+                                   [else value])))))))
+
+;; modal-vector/c tests
 (module+ test
   (require ruinit
            "test-common.rkt")
@@ -70,15 +112,6 @@
   (define/contract complex-vec
     (modal-vector/c* integer? integer? integer? integer? zero? #:set (mode:first 8) #:ref (mode:once-every 3))
     (vector #f #t 12 #t 2))
-
-  ;; detects that there's no mode
-  #;(define/contract no-mode-error
-    (modal-vector/c* integer? integer?)
-    (vector 1 1))
-  
-  #;(define/contract no-mode-error2
-    (modal-vector/c any/c integer? integer?)
-    (vector 0 0))
   
   (test-begin
     #:name simple-test
@@ -149,4 +182,44 @@
     (set complex-vec 3 #f) ;; stop checking
     (set complex-vec 4 1)))
   )
+
+(module+ test
+  (require ruinit
+           "test-common.rkt")
+
+  (define/contract always-integers
+    (modal-vectorof mode:always integer?)
+    (vector 1 2 4 5 9 15))
+
+  (define/contract only-ref
+    (modal-vectorof* #:ref mode:always (and positive? integer?))
+    (vector 10 10 10 10))
+  
+  (test-begin
+   #:name always-integers
+   (test-begin
+    (test-equal? (vector-ref always-integers 0) 1)
+    (vector-set! always-integers 0 2)
+    (test-exn exn:fail:contract:blame? (vector-set! always-integers 2 #t))
+    (test-exn exn:fail:contract:blame? (vector-ref always-integers 4))))
+
+  (test-begin
+   #:name only-ref
+   (test-begin
+    (test-equal? (vector-ref only-ref 0) 10)
+    (test-equal? (vector-ref only-ref 1) 10)
+    (test-equal? (vector-ref only-ref 2) 10)
+    (test-equal? (vector-ref only-ref 3) 10)
+    (vector-set! only-ref 0 "ten")
+    (vector-set! only-ref 1 'ten)
+    (vector-set! only-ref 2 -2)
+    (test-exn exn:fail:contract:blame? (vector-ref only-ref 3))
+    (vector-set! only-ref 0 98765432)
+    (vector-set! only-ref 1 99999999)
+    (vector-set! only-ref 2 2)
+    (test-equal? (vector-ref only-ref 3) 10)))s
+
+  )
+    
+  
 
