@@ -1,10 +1,12 @@
 #lang racket
 
-(require modalc
+(require "modes.rkt"
          syntax/parse/define)
 
 (provide modal-vector/c
-         modal-vector/c*)
+         modal-vector/c*
+         modal-vectorof
+         modal-vectorof*)
 
 ;; apply mode to both ref and set
 (define (modal-vector/c should-apply-ctc? . inner-ctc)
@@ -36,24 +38,18 @@
    #:late-neg-projection
    (λ (blame)
      (define inner-ctc-proj/blame (apply vector-immutable (map (λ (p) (p (blame-swap blame))) inner-ctc-proj)))
-     (λ (val neg-party)
-       (impersonate-vector val
-                           (λ (vec index value)
-                             (cond [(should-apply-ctc?/ref (list index value))
-                                    ((vector-ref inner-ctc-proj/blame index) value neg-party)]
-                                   [else value]))
-                           (λ (vec index value)
-                             (cond [(should-apply-ctc?/set (list index value))
-                                    ((vector-ref inner-ctc-proj/blame index) value neg-party)]
-                                   [else value])))))))
+     (make-vector-proj (λ (index) (vector-ref inner-ctc-proj/blame index))
+                       (λ (index) (vector-ref inner-ctc-proj/blame index))
+                       should-apply-ctc?/ref
+                       should-apply-ctc?/set))))
 
-(define (modal-vectorof should-apply-ctc? . inner-ctc)
-  (apply modal-vectorof* inner-ctc #:ref/set should-apply-ctc?))
+(define (modal-vectorof should-apply-ctc? inner-ctc)
+  (modal-vectorof* inner-ctc #:ref/set should-apply-ctc?))
 
 (define (modal-vectorof* #:ref [ref-ctc? #f]
                         #:set [set-ctc? #f]
                         #:ref/set [all-ctc? #f]
-                        . inner-ctc)
+                        inner-ctc)
   
   ;; error when no mode exists
   (unless (or ref-ctc?
@@ -69,26 +65,29 @@
                                     all-ctc?
                                     mode:never))
   (define inner-ctc-proj
-    (apply contract-late-neg-projection inner-ctc))
+    (contract-late-neg-projection inner-ctc))
 
   (make-contract
    #:name `(modal-vector/c ,(contract-name inner-ctc-proj))
    #:late-neg-projection
    (λ (blame)
      (define inner-ctc-proj/blame (inner-ctc-proj blame))
-     (λ (val neg-party)
+     (make-vector-proj (λ (index) inner-ctc-proj/blame)
+                       (λ (index) inner-ctc-proj/blame)
+                       should-apply-ctc?/ref
+                       should-apply-ctc?/set))))
+
+(define (make-vector-proj index->ref-proj index->set-proj should-apply-ctc?/ref should-apply-ctc?/set)
+  (λ (val neg-party)
        (impersonate-vector val
                            (λ (vec index value)
                              (cond [(should-apply-ctc?/ref (list index value))
-                                    (for/vector ([v vec])
-                                      (inner-ctc-proj/blame v neg-party))
-                                    value]
+                                    ((index->ref-proj index) value neg-party)]
                                    [else value]))
                            (λ (vec index value)
                              (cond [(should-apply-ctc?/set (list index value))
-                                    (for/vector ([v vec])
-                                      (inner-ctc-proj/blame v neg-party))]
-                                   [else value])))))))
+                                    ((index->set-proj index) value neg-party)]
+                                   [else value])))))
 
 ;; modal-vector/c tests
 (module+ test
@@ -155,8 +154,6 @@
    (test-equal? (get complex-vec 3) #t)
    (test-exn exn:fail:contract:blame? (get complex-vec 3)))
 
-  ;; (define basic-vec (vector 2 -3 4.5 1 0))
-  ;; (define complex-vec (vector #f #t 12 #t 2))
   (test-begin
    #:name set-function
    (test-begin
@@ -183,6 +180,7 @@
     (set complex-vec 4 1)))
   )
 
+;; modal-vectorof tests
 (module+ test
   (require ruinit
            "test-common.rkt")
@@ -201,7 +199,7 @@
     (test-equal? (vector-ref always-integers 0) 1)
     (vector-set! always-integers 0 2)
     (test-exn exn:fail:contract:blame? (vector-set! always-integers 2 #t))
-    (test-exn exn:fail:contract:blame? (vector-ref always-integers 4))))
+    (test-equal? (vector-ref always-integers 4) 9)))
 
   (test-begin
    #:name only-ref
@@ -212,14 +210,13 @@
     (test-equal? (vector-ref only-ref 3) 10)
     (vector-set! only-ref 0 "ten")
     (vector-set! only-ref 1 'ten)
+    (test-exn exn:fail:contract:blame? (vector-ref only-ref 0))
     (vector-set! only-ref 2 -2)
-    (test-exn exn:fail:contract:blame? (vector-ref only-ref 3))
+    (test-equal? (vector-ref only-ref 3) 10)
     (vector-set! only-ref 0 98765432)
     (vector-set! only-ref 1 99999999)
     (vector-set! only-ref 2 2)
-    (test-equal? (vector-ref only-ref 3) 10)))s
-
-  )
+    (test-equal? (vector-ref only-ref 3) 10))))
     
   
 

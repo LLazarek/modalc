@@ -4,6 +4,10 @@
          modal->
          modal->i
          modal->*
+         modal-vector/c
+         modal-vector/c*
+         modal-vectorof
+         modal-vectorof*
          (all-from-out "modes.rkt"))
 
 ;; todo: new mode idea: decreasing ctc strength over time
@@ -11,7 +15,8 @@
 (require racket/contract
          syntax/parse/define
          "modes.rkt"
-         "modal-arrow-i.rkt")
+         "modal-arrow-i.rkt"
+         "modal-vector.rkt")
 
 ;; mode/c : (any/c -> boolean?)
 ;;   where the argument is the value to potentially be contracted
